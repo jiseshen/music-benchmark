@@ -98,6 +98,7 @@ def evaluate_all(
     key_gt_path=None,
     filter_gt_path=None,
     sep_gt_path=None,
+    und_ref_path=None,
     dataset="mutask",
     **kwargs,
 ):
@@ -153,7 +154,24 @@ def evaluate_all(
         json_path = Path(und_path) / "captions.json"
         with open(json_path, "r") as f:
             data = json.load(f)
-        evaluate_und(data, model_name=model_name, **kwargs)
+        
+        # Build samples for CLaMP3 if und_ref_path is provided
+        samples = None
+        if und_ref_path:
+            und_ref = _normalize_gt_dir(Path(und_ref_path))
+            samples = []
+            for i, pair in enumerate(data):
+                ref_audio = und_ref / f"audio_{i}.wav"
+                if ref_audio.exists():
+                    samples.append(Sample(
+                        id=str(i),
+                        text=pair[0],
+                        gt_path=ref_audio,
+                        gen_path=ref_audio,
+                    ))
+            print(f"[INFO] UND matched {len(samples)}/{len(data)} audio files for CLaMP3")
+        
+        evaluate_und(data, model_name=model_name, samples=samples, **kwargs)
 
     # Source separation (SI-SNR) — fixed segment: generated [5.2,10.2) vs GT [0.0,5.0)
     if sep_path:
@@ -234,12 +252,12 @@ def evaluate_all(
         print(f"[INFO] FILTER matched {len(samples)}/{len(DATASET)} files in {base}")
         evaluate_filter(samples, model_name=model_name, **kwargs)
 
-
 if __name__=="__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--model-name", type=str, required=True, help="Model name for logging")
     parser.add_argument("--gen-path", type=str, default=None, help="Path to generated audio files for generation evaluation")
     parser.add_argument("--und-path", type=str, default=None, help="Path to understanding results folder for understanding evaluation")
+    parser.add_argument("--und-ref-path", type=str, default=None, help="Reference audio folder for UND CLaMP3 evaluation")
     parser.add_argument("--sep-path", type=str, default=None, help="Path to separated audio outputs for source separation evaluation")
     parser.add_argument("--infill-path", type=str, default=None, help="Path to infill generated audio outputs")
     parser.add_argument("--key-path", type=str, default=None, help="Path to key-change generated audio outputs")
@@ -257,6 +275,7 @@ if __name__=="__main__":
         model_name=args.model_name,
         gen_path=args.gen_path,
         und_path=args.und_path,
+        und_ref_path=args.und_ref_path,
         sep_path=args.sep_path,
         infill_path=args.infill_path,
         key_path=args.key_path,

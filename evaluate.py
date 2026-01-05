@@ -349,6 +349,19 @@ def evaluate_und(
     output_dir: str = "result/und_results.csv",
     **kwargs
 ):
+    """
+    Evaluate music understanding task using GPT evaluation and optionally CLaMP3 scoring.
+    
+    Args:
+        text_pairs: List of [reference, generated] text pairs
+        model_name: Model identifier for logging
+        gpt_model: GPT model version to use
+        api_key: OpenAI API key (uses env var if not provided)
+        output_dir: Path to save results CSV
+    
+    Returns:
+        dict with metrics: gpt-eval, f1, recall, precision, clamp3 (if available), per_category_metrics
+    """
     result_path = Path(output_dir)
     if result_path.exists():
         df = pd.read_csv(result_path, index_col=0)
@@ -363,24 +376,61 @@ def evaluate_und(
     def _save(df: pd.DataFrame):
         df.to_csv(result_path, index=True, float_format="%.4f")
 
-    if "gpt-eval" in df.columns and model_name in df.index and pd.notna(df.loc[model_name, "gpt-eval"]):
-        metrics["gpt-eval"] = float(df.loc[model_name, "gpt-eval"])
+    # GPT-based evaluation
+    if "gpt_score" in df.columns and model_name in df.index and pd.notna(df.loc[model_name, "gpt_score"]):
+        metrics["gpt_score"] = float(df.loc[model_name, "gpt_score"])
         metrics["f1"] = float(df.loc[model_name, "f1"])
         metrics["recall"] = float(df.loc[model_name, "recall"])
+        metrics["precision"] = float(df.loc[model_name, "precision"]) if "precision" in df.columns else 0.0
     else:
         from metric.gpt_eval import gpt_eval
-        for pair in text_pairs:
-            pair[0] = pair[0].split(":", 1)[1] if pair[0].startswith("Generate") else pair[0]
+        
         refs = [pair[0] for pair in text_pairs]
         gens = [pair[1] for pair in text_pairs]
+        
+        print(f"[UND] Running GPT evaluation on {len(refs)} pairs...")
         results = gpt_eval(refs, gens, model=gpt_model, api_key=api_key)
-        metrics["gpt-eval"] = round(float(results.get("score", 0)), 4)
-        df.loc[model_name, "gpt-eval"] = metrics["gpt-eval"]
+        
+        # Store overall metrics
+        metrics["gpt_score"] = round(float(results.get("gpt_score", 0)), 4)
         metrics["f1"] = round(float(results.get("f1", 0)), 4)
-        df.loc[model_name, "f1"] = metrics["f1"]
         metrics["recall"] = round(float(results.get("recall", 0)), 4)
+        metrics["precision"] = round(float(results.get("precision", 0)), 4)
+        
+        # Update dataframe
+        df.loc[model_name, "gpt_score"] = metrics["gpt_score"]
+        df.loc[model_name, "f1"] = metrics["f1"]
         df.loc[model_name, "recall"] = metrics["recall"]
+        df.loc[model_name, "precision"] = metrics["precision"]
+        
+        # Store per-category metrics if available
+        per_cat = results.get("per_category_metrics", {})
+        if per_cat:
+            for cat_name, cat_metrics in per_cat.items():
+                for metric_name, metric_val in cat_metrics.items():
+                    col_name = f"{cat_name}_{metric_name}"
+                    df.loc[model_name, col_name] = round(float(metric_val), 4)
+            metrics["per_category_metrics"] = per_cat
+        
         _save(df)
+
+    # CLaMP3 score computation (optional)
+    if "clamp3" in df.columns and model_name in df.index and pd.notna(df.loc[model_name, "clamp3"]):
+        metrics["clamp3"] = float(df.loc[model_name, "clamp3"])
+    else:
+        if "samples" in kwargs:
+            samples = kwargs["samples"]
+            if samples and hasattr(samples[0], 'gen_path'):
+                from metric.clamp3_score import clamp3_score
+                refs = [pair[0] for pair in text_pairs]
+                gen_files = [str(s.gen_path) for s in samples if s.gen_path.exists()]
+                if gen_files and len(gen_files) == len(refs):
+                    print(f"[UND-CLaMP3] Computing CLaMP3 score for {len(gen_files)} samples...")
+                    clamp3_val = clamp3_score(refs, gen_files)
+                    metrics["clamp3"] = round(float(clamp3_val), 4)
+                    df.loc[model_name, "clamp3"] = metrics["clamp3"]
+                    _save(df)
+                    print(f"[UND-CLaMP3] CLaMP3 score: {metrics['clamp3']:.4f}")
 
     return metrics
 
